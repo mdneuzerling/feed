@@ -1,0 +1,106 @@
+---
+title: "Exploration of feed data"
+author: "mdneuzerling"
+date: "April 23, 2018"
+output: html_document
+---
+
+## Setup
+```{r packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(sqldf)
+library(visdat)
+```
+
+```{r setup, include=FALSE}
+feed_raw <- paste0(Sys.getenv("GITHUB"), "/feed/feed.csv") %>% read_csv
+```
+
+At this point we've loaded the raw csv data with the `read_csv` function. 
+`read_csv` does not convert strings to factors, but we do have a few factors
+here. The year variables are all integers and begin with Y, while the longitude
+and latitude variables are numerics.
+
+```{r}
+feed_raw <- feed_raw %>% mutate_at(
+    vars(-starts_with("Y"), -starts_with("l")), 
+    funs(as.factor)
+)
+```
+
+We're also going to add an indexing column.
+```{r}
+feed_raw <- feed_raw %>% cbind(Id = seq(1, nrow(.)), .)
+```
+
+The initial wide format isn't very convenient for modelling, but it is 
+appropriate for visualising the missing data.
+Some missing data, but it seems that a row is either complete, or is missing
+an entire string of years. It actually looks as though collection starts in 
+different years for each item, but once collection starts it continues
+uninterrupted. What happened in 1993?
+
+```{r}
+feed_raw %>% vis_dat(warn_large_data = FALSE)
+```
+
+Let's clean this up. We gather all of those year columns into a simple 
+Key/Value long format. We then take the four right-most characters of each year,
+effectively dropping the "Y" in front of each year.
+
+```{r gather}
+feed <- feed_raw %>% 
+    gather(key = Year, value = Production, starts_with("Y")) %>% 
+    mutate(Year = Year %>% substr(2, 5) %>% as.numeric)
+```
+
+We use an SQL join to introduce a change column for each (Area, Item,
+Element) tuple, so that we can track how much production has increased or
+decreased since last year. I can't think of a *clean* way to do this with the
+usual R `merge` function, and SQL seems so well-suited for the task.
+
+```{r production_last_year}
+feed <- sqldf(
+    "
+    SELECT       CURRENTYEAR.*
+                ,LASTYEAR.Production AS ProductionLastYear
+                ,CURRENTYEAR.Production - LASTYEAR.Production as ProductionChange
+    FROM        feed AS CURRENTYEAR
+    LEFT JOIN   feed AS LASTYEAR
+        ON      CURRENTYEAR.Area = LASTYEAR.Area
+        AND     CURRENTYEAR.Item = LASTYEAR.Item
+        AND     CURRENTYEAR.Element = LASTYEAR.Element
+        AND     CURRENTYEAR.Year = LASTYEAR.Year + 1
+    "
+)
+```
+
+Change in food and feed production over the years.
+```{r, out.width = "100%"}
+feed %>%
+    group_by(Year, Element) %>% 
+    summarise(Production = Production %>% sum(na.rm = TRUE)) %>%
+    ggplot(aes(x = Year, y = Production, group = Element, colour = Element)) +
+    geom_line() + 
+    scale_x_continuous(
+        breaks = seq(min(feed$Year), max(feed$Year), 4)
+    )
+```
+
+Heat map showing change in production for each category.
+
+```{r heat_map, fig.height=20, fig.width=12}
+feed %>% 
+    group_by(Year, Item) %>%
+    filter(!is.na(ProductionLastYear)) %>% 
+    summarise(
+        Production = Production %>% sum(na.rm = TRUE),
+        ProductionLastYear = ProductionLastYear %>% sum(na.rm = TRUE)
+    ) %>% 
+    mutate(PercentProductionChange = 
+               (Production - ProductionLastYear) / ProductionLastYear) %>% 
+    ggplot(aes(x = Year, y = Item, fill = PercentProductionChange)) +
+    geom_raster() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                         limits = c(-0.5, 0.5))
+```
