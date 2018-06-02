@@ -186,6 +186,11 @@ element_item_ts <- feed %>%
         frequency = 1 
     ) %>% 
     gts(characters = list(c(4), c(4)), gnames = c("element", "item_code"))
+```
 
-plot(element_item_ts)
+Forecast the hierarchical time series bottom-up. The bottom graph contains over
+200 time series, so isn't a very useful data visualisation.
+```{r hierarchical_forecast}
+forecast(element_item_ts, h = 10, fmethod = "arima", method = "bu") %>% 
+    plot(include = 20)
 ```
